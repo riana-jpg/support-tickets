@@ -1,172 +1,219 @@
-import datetime
-import random
+"""
+Encounter Dashboard — Demo
+Run with:  streamlit run encounter_dashboard.py
 
-import altair as alt
+This is a self-contained demo. It generates realistic synthetic
+encounter data on the fly (no external files or DB needed), so it
+runs anywhere `streamlit` is installed.
+"""
+
 import numpy as np
 import pandas as pd
 import streamlit as st
+import altair as alt
+from datetime import datetime, timedelta
 
-# Show app title and description.
-st.set_page_config(page_title="Support tickets", page_icon="🎫")
-st.title("🎫 Support tickets")
-st.write(
-    """
-    This app shows how you can build an internal tool in Streamlit. Here, we are 
-    implementing a support ticket workflow. The user can create a ticket, edit 
-    existing tickets, and view some statistics.
-    """
+# ---------------------------------------------------------------------------
+# Page config
+# ---------------------------------------------------------------------------
+st.set_page_config(
+    page_title="Encounter Dashboard",
+    page_icon="🩺",
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
 
-# Create a random Pandas dataframe with existing tickets.
-if "df" not in st.session_state:
+# ---------------------------------------------------------------------------
+# Synthetic data generation (cached so it's stable across reruns/filters)
+# ---------------------------------------------------------------------------
+@st.cache_data
+def generate_encounters(n=2500, seed=42):
+    rng = np.random.default_rng(seed)
 
-    # Set seed for reproducibility.
-    np.random.seed(42)
-
-    # Make up some fake issue descriptions.
-    issue_descriptions = [
-        "Network connectivity issues in the office",
-        "Software application crashing on startup",
-        "Printer not responding to print commands",
-        "Email server downtime",
-        "Data backup failure",
-        "Login authentication problems",
-        "Website performance degradation",
-        "Security vulnerability identified",
-        "Hardware malfunction in the server room",
-        "Employee unable to access shared files",
-        "Database connection failure",
-        "Mobile application not syncing data",
-        "VoIP phone system issues",
-        "VPN connection problems for remote employees",
-        "System updates causing compatibility issues",
-        "File server running out of storage space",
-        "Intrusion detection system alerts",
-        "Inventory management system errors",
-        "Customer data not loading in CRM",
-        "Collaboration tool not sending notifications",
+    providers = [
+        "Dr. A. Nguyen", "Dr. B. Alvarez", "Dr. C. Whitfield",
+        "Dr. D. Osei", "NP E. Ramirez", "PA F. Chen",
     ]
+    departments = ["Primary Care", "Behavioral Health", "Pediatrics", "Dental", "Urgent Care"]
+    encounter_types = ["Office Visit", "Telehealth", "Mobile Clinic", "Follow-up", "Annual Wellness"]
+    payers = ["Medicaid", "Medicare", "Commercial", "Self-Pay", "Sliding Scale"]
+    statuses = ["Completed", "No-Show", "Cancelled", "Scheduled"]
+    status_p = [0.78, 0.10, 0.07, 0.05]
 
-    # Generate the dataframe with 100 rows/tickets.
-    data = {
-        "ID": [f"TICKET-{i}" for i in range(1100, 1000, -1)],
-        "Issue": np.random.choice(issue_descriptions, size=100),
-        "Status": np.random.choice(["Open", "In Progress", "Closed"], size=100),
-        "Priority": np.random.choice(["High", "Medium", "Low"], size=100),
-        "Date Submitted": [
-            datetime.date(2023, 6, 1) + datetime.timedelta(days=random.randint(0, 182))
-            for _ in range(100)
-        ],
-    }
-    df = pd.DataFrame(data)
+    start = datetime.today() - timedelta(days=180)
+    dates = [start + timedelta(days=int(d)) for d in rng.integers(0, 180, size=n)]
 
-    # Save the dataframe in session state (a dictionary-like object that persists across
-    # page runs). This ensures our data is persisted when the app updates.
-    st.session_state.df = df
+    df = pd.DataFrame({
+        "encounter_id": [f"ENC-{100000+i}" for i in range(n)],
+        "date": dates,
+        "provider": rng.choice(providers, size=n, p=[0.22, 0.2, 0.18, 0.15, 0.15, 0.10]),
+        "department": rng.choice(departments, size=n, p=[0.40, 0.15, 0.20, 0.10, 0.15]),
+        "encounter_type": rng.choice(encounter_types, size=n, p=[0.45, 0.20, 0.15, 0.15, 0.05]),
+        "payer": rng.choice(payers, size=n, p=[0.45, 0.20, 0.20, 0.10, 0.05]),
+        "status": rng.choice(statuses, size=n, p=status_p),
+        "patient_age": rng.integers(1, 90, size=n),
+        "duration_min": rng.integers(10, 60, size=n),
+        "charge_amount": np.round(rng.normal(180, 60, size=n).clip(40, 500), 2),
+    })
+    df["date"] = pd.to_datetime(df["date"]).dt.normalize()
+    df["month"] = df["date"].dt.to_period("M").dt.to_timestamp()
+    df["weekday"] = df["date"].dt.day_name()
+    return df
 
 
-# Show a section to add a new ticket.
-st.header("Add a ticket")
+df = generate_encounters()
 
-# We're adding tickets via an `st.form` and some input widgets. If widgets are used
-# in a form, the app will only rerun once the submit button is pressed.
-with st.form("add_ticket_form"):
-    issue = st.text_area("Describe the issue")
-    priority = st.selectbox("Priority", ["High", "Medium", "Low"])
-    submitted = st.form_submit_button("Submit")
+# ---------------------------------------------------------------------------
+# Sidebar filters
+# ---------------------------------------------------------------------------
+st.sidebar.title("🩺 Filters")
+st.sidebar.caption("Demo data — synthetic, generated on load")
 
-if submitted:
-    # Make a dataframe for the new ticket and append it to the dataframe in session
-    # state.
-    recent_ticket_number = int(max(st.session_state.df.ID).split("-")[1])
-    today = datetime.datetime.now().strftime("%m-%d-%Y")
-    df_new = pd.DataFrame(
-        [
-            {
-                "ID": f"TICKET-{recent_ticket_number+1}",
-                "Issue": issue,
-                "Status": "Open",
-                "Priority": priority,
-                "Date Submitted": today,
-            }
-        ]
-    )
+min_date, max_date = df["date"].min().date(), df["date"].max().date()
+date_range = st.sidebar.date_input(
+    "Date range", value=(min_date, max_date), min_value=min_date, max_value=max_date
+)
+if isinstance(date_range, tuple) and len(date_range) == 2:
+    start_date, end_date = date_range
+else:
+    start_date, end_date = min_date, max_date
 
-    # Show a little success message.
-    st.write("Ticket submitted! Here are the ticket details:")
-    st.dataframe(df_new, use_container_width=True, hide_index=True)
-    st.session_state.df = pd.concat([df_new, st.session_state.df], axis=0)
-
-# Show section to view and edit existing tickets in a table.
-st.header("Existing tickets")
-st.write(f"Number of tickets: `{len(st.session_state.df)}`")
-
-st.info(
-    "You can edit the tickets by double clicking on a cell. Note how the plots below "
-    "update automatically! You can also sort the table by clicking on the column headers.",
-    icon="✍️",
+departments_sel = st.sidebar.multiselect(
+    "Department", sorted(df["department"].unique()), default=sorted(df["department"].unique())
+)
+providers_sel = st.sidebar.multiselect(
+    "Provider", sorted(df["provider"].unique()), default=sorted(df["provider"].unique())
+)
+status_sel = st.sidebar.multiselect(
+    "Status", sorted(df["status"].unique()), default=sorted(df["status"].unique())
+)
+payer_sel = st.sidebar.multiselect(
+    "Payer", sorted(df["payer"].unique()), default=sorted(df["payer"].unique())
 )
 
-# Show the tickets dataframe with `st.data_editor`. This lets the user edit the table
-# cells. The edited data is returned as a new dataframe.
-edited_df = st.data_editor(
-    st.session_state.df,
+mask = (
+    (df["date"].dt.date >= start_date)
+    & (df["date"].dt.date <= end_date)
+    & (df["department"].isin(departments_sel))
+    & (df["provider"].isin(providers_sel))
+    & (df["status"].isin(status_sel))
+    & (df["payer"].isin(payer_sel))
+)
+fdf = df[mask].copy()
+
+st.sidebar.divider()
+st.sidebar.metric("Rows in view", f"{len(fdf):,}")
+
+# ---------------------------------------------------------------------------
+# Header + KPIs
+# ---------------------------------------------------------------------------
+st.title("Encounter Dashboard")
+st.caption(f"Showing {start_date:%b %d, %Y} – {end_date:%b %d, %Y}  ·  demo / synthetic data")
+
+completed = fdf[fdf["status"] == "Completed"]
+no_show_rate = (fdf["status"] == "No-Show").mean() * 100 if len(fdf) else 0
+cancel_rate = (fdf["status"] == "Cancelled").mean() * 100 if len(fdf) else 0
+
+k1, k2, k3, k4, k5 = st.columns(5)
+k1.metric("Total Encounters", f"{len(fdf):,}")
+k2.metric("Completed", f"{len(completed):,}")
+k3.metric("No-Show Rate", f"{no_show_rate:.1f}%")
+k4.metric("Cancellation Rate", f"{cancel_rate:.1f}%")
+k5.metric("Avg. Charge (Completed)", f"${completed['charge_amount'].mean():,.0f}" if len(completed) else "—")
+
+st.divider()
+
+# ---------------------------------------------------------------------------
+# Charts row 1: volume over time + status mix
+# ---------------------------------------------------------------------------
+c1, c2 = st.columns((2, 1))
+
+with c1:
+    st.subheader("Encounter Volume Over Time")
+    daily = fdf.groupby("date").size().reset_index(name="encounters")
+    chart = (
+        alt.Chart(daily)
+        .mark_area(opacity=0.4, interpolate="monotone")
+        .encode(x=alt.X("date:T", title=None), y=alt.Y("encounters:Q", title="Encounters"))
+        + alt.Chart(daily)
+        .mark_line(interpolate="monotone")
+        .encode(x="date:T", y="encounters:Q")
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+with c2:
+    st.subheader("Status Mix")
+    status_counts = fdf["status"].value_counts().reset_index()
+    status_counts.columns = ["status", "count"]
+    pie = (
+        alt.Chart(status_counts)
+        .mark_arc(innerRadius=60)
+        .encode(theta="count:Q", color="status:N", tooltip=["status", "count"])
+    )
+    st.altair_chart(pie, use_container_width=True)
+
+# ---------------------------------------------------------------------------
+# Charts row 2: department + provider breakdown
+# ---------------------------------------------------------------------------
+c3, c4 = st.columns(2)
+
+with c3:
+    st.subheader("Encounters by Department")
+    dept = fdf.groupby("department").size().reset_index(name="encounters").sort_values("encounters", ascending=True)
+    bar = (
+        alt.Chart(dept)
+        .mark_bar()
+        .encode(x="encounters:Q", y=alt.Y("department:N", sort="-x", title=None))
+    )
+    st.altair_chart(bar, use_container_width=True)
+
+with c4:
+    st.subheader("Encounters by Provider")
+    prov = fdf.groupby("provider").size().reset_index(name="encounters").sort_values("encounters", ascending=True)
+    bar2 = (
+        alt.Chart(prov)
+        .mark_bar()
+        .encode(x="encounters:Q", y=alt.Y("provider:N", sort="-x", title=None))
+    )
+    st.altair_chart(bar2, use_container_width=True)
+
+# ---------------------------------------------------------------------------
+# Charts row 3: payer mix + weekday pattern
+# ---------------------------------------------------------------------------
+c5, c6 = st.columns(2)
+
+with c5:
+    st.subheader("Payer Mix")
+    payer = fdf.groupby("payer").size().reset_index(name="encounters")
+    bar3 = alt.Chart(payer).mark_bar().encode(
+        x=alt.X("payer:N", sort="-y", title=None), y="encounters:Q"
+    )
+    st.altair_chart(bar3, use_container_width=True)
+
+with c6:
+    st.subheader("Encounters by Day of Week")
+    order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    wd = fdf.groupby("weekday").size().reindex(order).fillna(0).reset_index()
+    wd.columns = ["weekday", "encounters"]
+    bar4 = alt.Chart(wd).mark_bar().encode(
+        x=alt.X("weekday:N", sort=order, title=None), y="encounters:Q"
+    )
+    st.altair_chart(bar4, use_container_width=True)
+
+st.divider()
+
+# ---------------------------------------------------------------------------
+# Detail table
+# ---------------------------------------------------------------------------
+st.subheader("Encounter Detail")
+st.dataframe(
+    fdf.sort_values("date", ascending=False)[
+        ["encounter_id", "date", "provider", "department", "encounter_type",
+         "payer", "status", "patient_age", "duration_min", "charge_amount"]
+    ],
     use_container_width=True,
     hide_index=True,
-    column_config={
-        "Status": st.column_config.SelectboxColumn(
-            "Status",
-            help="Ticket status",
-            options=["Open", "In Progress", "Closed"],
-            required=True,
-        ),
-        "Priority": st.column_config.SelectboxColumn(
-            "Priority",
-            help="Priority",
-            options=["High", "Medium", "Low"],
-            required=True,
-        ),
-    },
-    # Disable editing the ID and Date Submitted columns.
-    disabled=["ID", "Date Submitted"],
 )
 
-# Show some metrics and charts about the ticket.
-st.header("Statistics")
-
-# Show metrics side by side using `st.columns` and `st.metric`.
-col1, col2, col3 = st.columns(3)
-num_open_tickets = len(st.session_state.df[st.session_state.df.Status == "Open"])
-col1.metric(label="Number of open tickets", value=num_open_tickets, delta=10)
-col2.metric(label="First response time (hours)", value=5.2, delta=-1.5)
-col3.metric(label="Average resolution time (hours)", value=16, delta=2)
-
-# Show two Altair charts using `st.altair_chart`.
-st.write("")
-st.write("##### Ticket status per month")
-status_plot = (
-    alt.Chart(edited_df)
-    .mark_bar()
-    .encode(
-        x="month(Date Submitted):O",
-        y="count():Q",
-        xOffset="Status:N",
-        color="Status:N",
-    )
-    .configure_legend(
-        orient="bottom", titleFontSize=14, labelFontSize=14, titlePadding=5
-    )
-)
-st.altair_chart(status_plot, use_container_width=True, theme="streamlit")
-
-st.write("##### Current ticket priorities")
-priority_plot = (
-    alt.Chart(edited_df)
-    .mark_arc()
-    .encode(theta="count():Q", color="Priority:N")
-    .properties(height=300)
-    .configure_legend(
-        orient="bottom", titleFontSize=14, labelFontSize=14, titlePadding=5
-    )
-)
-st.altair_chart(priority_plot, use_container_width=True, theme="streamlit")
+csv = fdf.to_csv(index=False).encode("utf-8")
+st.download_button("Download filtered data as CSV", csv, "encounters_filtered.csv", "text/csv")
